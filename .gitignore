@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+.pytest_cache/
+.DS_Store
+
+# Local environment variables (never commit)
+.env
+
+# Generated data (raw API payloads + processed tables)
+data/raw/*
+data/processed/*
+!data/README.md
+!data/raw/.gitkeep
+!data/processed/.gitkeep

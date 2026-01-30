@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.git/
+.gitignore
+*.pyc
+*.pyo
+*.pyd
+*.log
+notebooks/
+data/
+*.ipynb
+*.DS_Store
