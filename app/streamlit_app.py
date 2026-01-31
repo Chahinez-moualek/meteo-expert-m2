@@ -26,12 +26,16 @@ if str(ROOT) not in sys.path:
 
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+
+import plotly.graph_objects as go
+
 
 # Data layer (collection + cleaning)
 from src.data import (
@@ -762,6 +766,20 @@ def _format_day_fr(ts: pd.Timestamp) -> str:
 def _format_hour_fr(ts: pd.Timestamp) -> str:
     return ts.strftime("%Hh")
 
+def _format_day_date_fr(ts: pd.Timestamp) -> str:
+    jours = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"]
+    mois = [
+        "janv.", "févr.", "mars", "avr.", "mai", "juin",
+        "juil.", "août", "sept.", "oct.", "nov.", "déc."
+    ]
+    ts = pd.to_datetime(ts)
+    return f"{jours[ts.dayofweek]} {ts.day} {mois[ts.month - 1]}"
+
+
+def _month_label_fr(m: int) -> str:
+    mois = ["Jan", "Fév", "Mar", "Avr", "Mai", "Juin", "Juil", "Aoû", "Sep", "Oct", "Nov", "Déc"]
+    return mois[m - 1] if 1 <= m <= 12 else str(m)
+
 
 def _safe_round(x: Any) -> str:
     """Round numeric values for display.
@@ -773,6 +791,15 @@ def _safe_round(x: Any) -> str:
         return str(int(round(float(x))))
     except Exception:
         return "–"
+    
+def _format_date_fr(d: date) -> str:
+    jours = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+    mois = [
+        "janvier", "février", "mars", "avril", "mai", "juin",
+        "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    ]
+    return f"{jours[d.weekday()]} {d.day} {mois[d.month - 1]} {d.year}"
+
 
 
 # -----------------------------
@@ -788,6 +815,13 @@ if "favorites" not in st.session_state:
 if "city_query" not in st.session_state:
     st.session_state.city_query = st.session_state.favorites[0]
 
+if "reset_favs" not in st.session_state:
+    st.session_state.reset_favs = False
+
+
+def _ask_reset_favorites() -> None:
+    st.session_state.reset_favs = True
+
 
 def _use_favorite_city() -> None:
     st.session_state.city_query = st.session_state.fav_city
@@ -796,7 +830,21 @@ def _use_favorite_city() -> None:
 def _use_popular_city() -> None:
     st.session_state.city_query = st.session_state.popular_city
 
+
 with st.sidebar:
+    # ⚠️ Reset AVANT de créer les widgets
+    if st.session_state.reset_favs:
+        st.session_state.favorites = list(DEFAULT_FAVORITES)
+        st.session_state.city_query = st.session_state.favorites[0]
+
+        # IMPORTANT: supprimer les clés des widgets pour repartir proprement
+        for k in ("fav_city", "popular_city"):
+            if k in st.session_state:
+                del st.session_state[k]
+
+        st.session_state.reset_favs = False
+        st.rerun()
+
     st.markdown("## Localisation")
 
     only_fr = st.toggle("France uniquement", value=True)
@@ -843,11 +891,10 @@ with st.sidebar:
             if name and name not in st.session_state.favorites:
                 st.session_state.favorites.insert(0, name)
     with col_b:
-        if st.button("Réinitialiser"):
-            st.session_state.favorites = list(DEFAULT_FAVORITES)
+        st.button("Réinitialiser", on_click=_ask_reset_favorites)
 
     st.markdown("---")
-    st.caption("Données météo : Open‑Meteo (API)\n\nCarte : Windy embed")
+    st.caption("Données météo : Open-Meteo (API)\n\nCarte : Windy embed")
 
 
 # -----------------------------
@@ -877,6 +924,9 @@ vigilance = compute_vigilance(forecast)
 # -----------------------------
 
 visual = code_to_visual(current_code, current_is_day)
+tz = ZoneInfo(location.timezone) if getattr(location, "timezone", None) else None
+today_local = datetime.now(tz).date() if tz else date.today()
+today_str = _format_date_fr(today_local)
 
 st.markdown(
     f"""
@@ -884,6 +934,7 @@ st.markdown(
   <div class="hero-top">
     <div>
       <div class="city">{location.label}</div>
+      <div class="muted" style="margin-top:2px; font-size:0.95rem;">{today_str}</div>
       <div class="desc">{visual.label_fr}</div>
       <div style="margin-top:10px;">
         <span class="badge v-{vigilance.level}">{vigilance.label}</span>
@@ -958,9 +1009,20 @@ with tab_forecast:
     if df_daily.empty:
         st.info("Données journalières indisponibles.")
     else:
+        # Date locale (même logique que la hero card)
+        tz = ZoneInfo(location.timezone) if getattr(location, "timezone", None) else None
+        today_local = datetime.now(tz).date() if tz else date.today()
+
+        # df_daily["time"] -> normaliser en date
+        df_daily2 = df_daily.copy()
+        df_daily2["day"] = pd.to_datetime(df_daily2["time"]).dt.date
+
+        # Garder uniquement aujourd'hui et les jours futurs, puis prendre les 7 prochains
+        df_daily_next = df_daily2[df_daily2["day"] > today_local].head(7)
+
         rows = []
-        for _, r in df_daily.head(7).iterrows():
-            day = _format_day_fr(pd.to_datetime(r["time"]))
+        for _, r in df_daily_next.iterrows():
+            day = _format_day_date_fr(pd.to_datetime(r["time"]))
             icon = code_to_visual(r.get("weather_code")).icon
             tmax = _safe_round(r.get("temperature_2m_max"))
             tmin = _safe_round(r.get("temperature_2m_min"))
@@ -981,6 +1043,7 @@ with tab_forecast:
 """
             )
 
+
         st.markdown(
             f"""
 <div class="glass">
@@ -990,23 +1053,78 @@ with tab_forecast:
             unsafe_allow_html=True,
         )
 
-    st.markdown("### Température (48h)")
-    if not df_hourly.empty:
-        now = pd.to_datetime(current.get("time")) if current.get("time") else df_hourly["time"].min()
-        df_48 = df_hourly[df_hourly["time"] >= now].head(48).copy()
-        df_48 = df_48.set_index("time")
-        st.line_chart(df_48[["temperature_2m", "apparent_temperature"]])
+        st.markdown("### Température (48h)")
+        if not df_hourly.empty:
+            now = pd.to_datetime(current.get("time")) if current.get("time") else pd.to_datetime(df_hourly["time"].min())
+
+            df_48 = df_hourly.copy()
+            df_48["time"] = pd.to_datetime(df_48["time"])
+            df_48 = df_48[df_48["time"] >= now].head(48).copy()
+
+            temp = pd.to_numeric(df_48.get("temperature_2m"), errors="coerce")
+            feel = pd.to_numeric(df_48.get("apparent_temperature"), errors="coerce")
+
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatter(
+                x=df_48["time"], y=temp,
+                mode="lines+markers",
+                name="Température (°C)",
+                line=dict(color="#00E5FF", width=2),     # <- couleur 1
+                marker=dict(color="#00E5FF"),
+                hovertemplate="%{x|%a %d %b · %Hh}<br>Température: %{y:.1f}°C<extra></extra>",
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=df_48["time"], y=feel,
+                mode="lines+markers",
+                name="Ressenti (°C)",
+                line=dict(color="#FFB300", width=2, dash="dash"),  # <- couleur 2
+                marker=dict(color="#FFB300"),
+                hovertemplate="%{x|%a %d %b · %Hh}<br>Ressenti: %{y:.1f}°C<extra></extra>",
+            ))
+
+            fig.add_vline(x=now, line_dash="dot", opacity=0.7)
+
+            fig.update_layout(
+                height=360,
+                margin=dict(l=10, r=10, t=10, b=10),
+                template="plotly_dark",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                hovermode="x unified",
+            )
+
+            fig.update_xaxes(tickformat="%Hh", dtick=3 * 60 * 60 * 1000, showgrid=True)
+            fig.update_yaxes(title="°C", showgrid=True, zeroline=False)
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Données horaires indisponibles.")
+
+
 
 
 with tab_map:
     st.markdown("### Satellite / Radar")
-    overlay = st.selectbox(
-        "Couche", ["satellite", "radar", "wind", "clouds"], index=0, help="Source : widget Windy"
+
+    overlay_label = st.selectbox(
+        "Couche",
+        ["Satellite", "Radar", "Vent", "Nuages"],
+        index=0,
+        help="Source : widget Windy",
     )
+
+    overlay_map = {
+        "Satellite": "satellite",
+        "Radar": "radar",
+        "Vent": "wind",
+        "Nuages": "clouds",
+    }
+
+    overlay = overlay_map[overlay_label]
+
     zoom = st.slider("Zoom", min_value=3, max_value=11, value=6)
 
-    # Windy embed. Documentation and generator: https://embed.windy.com/
-    # We keep parameters minimal.
     windy_url = (
         "https://embed.windy.com/embed2.html"
         f"?lat={location.latitude:.4f}&lon={location.longitude:.4f}"
@@ -1017,6 +1135,7 @@ with tab_map:
 
     st.components.v1.iframe(windy_url, height=520)
     st.caption("La carte est intégrée via le widget Windy (embed).")
+
 
 
 with tab_climate:
@@ -1041,9 +1160,36 @@ with tab_climate:
             col3.metric("Max (30j)", f"{stats.maximum:.1f}°C")
             col4.metric("Volatilité", f"{stats.std:.1f}")
 
-        st.markdown("#### Température moyenne journalière")
-        df_plot = hist[["date", "tmean"]].dropna().set_index("date")
-        st.area_chart(df_plot)
+        st.markdown("#### Température moyenne journalière (30 jours)")
+        df_plot = hist[["date", "tmean"]].dropna().copy()
+        df_plot["date"] = pd.to_datetime(df_plot["date"])
+        df_plot["tmean"] = pd.to_numeric(df_plot["tmean"], errors="coerce")
+        df_plot = df_plot.dropna().sort_values("date")
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_plot["date"],
+            y=df_plot["tmean"],
+            mode="lines+markers",
+            name="T° moyenne (°C)",
+            line=dict(color="#7C4DFF", width=2),   # <- couleur
+            marker=dict(color="#7C4DFF"),
+            hovertemplate="%{x|%a %d %b %Y}<br>T° moyenne: %{y:.1f}°C<extra></extra>",
+        ))
+
+        fig.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=10, b=10),
+            template="plotly_dark",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        fig.update_xaxes(tickformat="%d %b", showgrid=True)
+        fig.update_yaxes(title="°C", showgrid=True, zeroline=False)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+
 
     st.markdown("---")
     st.markdown("### Climat (Open‑Meteo archive)")
@@ -1058,14 +1204,87 @@ with tab_climate:
         st.info("Impossible de calculer des moyennes mensuelles (historique indisponible).")
     else:
         st.markdown("#### Moyennes mensuelles (12 derniers mois)")
-        st.line_chart(month12.set_index("month")["tmean"])
+
+        m12 = month12.copy()
+        m12["tmean"] = pd.to_numeric(m12.get("tmean"), errors="coerce")
+
+        if "month" not in m12.columns:
+            st.info("Format mensuel inattendu (colonne 'month' manquante).")
+        else:
+            # 1) Fabriquer un axe X propre et triable
+            if pd.api.types.is_integer_dtype(m12["month"]) or pd.api.types.is_numeric_dtype(m12["month"]):
+                # month = 1..12 (pas une vraie date) -> on trace en catégorie
+                m12["month_num"] = m12["month"].astype(int)
+                m12 = m12.dropna(subset=["tmean", "month_num"]).sort_values("month_num")
+                x = m12["month_num"].apply(_month_label_fr)
+            else:
+                # month est date-like -> on trace en vrai datetime
+                m12["month_dt"] = pd.to_datetime(m12["month"], errors="coerce")
+                m12 = m12.dropna(subset=["tmean", "month_dt"]).sort_values("month_dt")
+                x = m12["month_dt"]
+
+            # 2) Graphe Plotly
+            if not m12.empty:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=x,
+                    y=m12["tmean"],
+                    mode="lines+markers",
+                    name="T° moyenne mensuelle (°C)",
+                    line=dict(color="#00C853", width=2),   # <- couleur
+                    marker=dict(color="#00C853"),
+                    hovertemplate="%{x}<br>T°: %{y:.1f}°C<extra></extra>",
+                ))
+
+                fig.update_layout(
+                    height=320,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    template="plotly_dark",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                fig.update_yaxes(title="°C", showgrid=True, zeroline=False)
+                fig.update_xaxes(showgrid=True)
+
+                st.plotly_chart(fig, use_container_width=True)
+
+
 
     st.markdown("#### Normales approximatives (5 dernières années)")
-    start5y = end - timedelta(days=5*365)
+
+    start5y = end - timedelta(days=5 * 365)
     hist5y = cached_historical_daily(location, start5y, end)
     month5y = monthly_means_from_daily(hist5y)
+
     if month5y.empty:
         st.info("Historique 5 ans indisponible pour cette localisation.")
     else:
-        st.line_chart(month5y.set_index("month")["tmean"])
+        m5 = month5y.copy()
+        m5["month"] = pd.to_datetime(m5["month"], errors="coerce")
+        m5["tmean"] = pd.to_numeric(m5["tmean"], errors="coerce")
+        m5 = m5.dropna(subset=["month", "tmean"]).sort_values("month")
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=m5["month"],
+            y=m5["tmean"],
+            mode="lines",
+            name="Normale approx (°C)",
+            line=dict(color="#FF5252", width=2),
+            hovertemplate="%{x|%b %Y}<br>T°: %{y:.1f}°C<extra></extra>",
+        ))
+
+        fig.update_layout(
+            height=320,
+            margin=dict(l=10, r=10, t=10, b=10),
+            template="plotly_dark",
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        fig.update_xaxes(tickformat="%b\n%Y", dtick="M6", showgrid=True)
+        fig.update_yaxes(title="°C", showgrid=True, zeroline=False)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+
 
